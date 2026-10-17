@@ -1,6 +1,44 @@
 const API_URL = "https://acwellan-app.onrender.com/api";
 let bankChartInstance = null;
 
+// ===== АВТОРИЗАЦИЯ =====
+function login() {
+    const user = document.getElementById('auth-user').value;
+    const pass = document.getElementById('auth-pass').value;
+
+    fetch(API_URL + '/matches', {
+        headers: {
+            'Authorization': 'Basic ' + btoa(user + ':' + pass)
+        }
+    }).then(resp => {
+        if (resp.ok) {
+            localStorage.setItem('auth', btoa(user + ':' + pass));
+            document.getElementById('auth-modal').style.display = 'none';
+            loadMatches();
+        } else {
+            document.getElementById('auth-error').textContent = 'Неверный логин или пароль';
+        }
+    }).catch(() => {
+        document.getElementById('auth-error').textContent = 'Ошибка подключения к серверу';
+    });
+}
+
+function apiFetch(url, options = {}) {
+    const auth = localStorage.getItem('auth');
+    options.headers = options.headers || {};
+    if (auth) {
+        options.headers['Authorization'] = 'Basic ' + auth;
+    }
+    return fetch(url, options);
+}
+
+// Проверяем, есть ли уже пароль в localStorage
+const savedAuth = localStorage.getItem('auth');
+if (savedAuth) {
+    document.getElementById('auth-modal').style.display = 'none';
+}
+
+// ===== ВКЛАДКИ =====
 document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', function(e) {
         e.preventDefault();
@@ -29,7 +67,7 @@ async function loadMatches() {
     box.innerHTML = '<p style="color:#71717a;text-align:center;padding:40px;">Загрузка...</p>';
 
     try {
-        const resp = await fetch(url);
+        const resp = await apiFetch(url);
         const matches = await resp.json();
 
         if (!matches.length) {
@@ -78,7 +116,7 @@ async function predictMatch(matchId, isRefresh = false) {
     }
 
     try {
-        const resp = await fetch(url, { method: 'POST' });
+        const resp = await apiFetch(url, { method: 'POST' });
         const data = await resp.json();
 
         let html = '';
@@ -160,7 +198,7 @@ async function predictBatch() {
     if (date) url += '&date=' + date;
 
     try {
-        const resp = await fetch(url, { method: 'POST' });
+        const resp = await apiFetch(url, { method: 'POST' });
         const data = await resp.json();
 
         progress.innerHTML = `
@@ -196,7 +234,7 @@ async function loadHistory() {
     let url = API_URL + '/history?league=' + league + '&result=' + result + '&month=' + month;
 
     try {
-        const resp = await fetch(url);
+        const resp = await apiFetch(url);
         const history = await resp.json();
 
         if (!history.length) {
@@ -265,7 +303,7 @@ async function loadHistory() {
 
 async function updatePredictionResult(predId, result) {
     try {
-        const resp = await fetch(API_URL + '/prediction/' + predId + '?result=' + result, {
+        const resp = await apiFetch(API_URL + '/prediction/' + predId + '?result=' + result, {
             method: 'PATCH'
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -282,7 +320,7 @@ async function populateMonthFilter() {
     const currentVal = sel.value;
 
     try {
-        const resp = await fetch(API_URL + '/history?league=all&result=all&month=all');
+        const resp = await apiFetch(API_URL + '/history?league=all&result=all&month=all');
         const history = await resp.json();
 
         const months = new Set();
@@ -308,7 +346,7 @@ async function loadStats() {
     if (!box) return;
 
     try {
-        const resp = await fetch(API_URL + '/stats');
+        const resp = await apiFetch(API_URL + '/stats');
         const s = await resp.json();
 
         box.innerHTML = `
@@ -328,7 +366,7 @@ async function loadResults() {
     tableBox.innerHTML = '';
 
     try {
-        const resp = await fetch(API_URL + '/monthly-results');
+        const resp = await apiFetch(API_URL + '/monthly-results');
         const data = await resp.json();
         const o = data.overall;
 
@@ -372,7 +410,7 @@ async function loadLeagueStats() {
     box.innerHTML = '<p style="color:#71717a;text-align:center;padding:40px;">Загрузка...</p>';
 
     try {
-        const resp = await fetch(API_URL + '/league-stats');
+        const resp = await apiFetch(API_URL + '/league-stats');
         const data = await resp.json();
 
         if (!data.leagues.length) {
@@ -410,7 +448,7 @@ async function loadChart() {
     const accuracyBox = document.getElementById('accuracy-block');
 
     try {
-        const accResp = await fetch(API_URL + '/accuracy-30d');
+        const accResp = await apiFetch(API_URL + '/accuracy-30d');
         const acc = await accResp.json();
 
         const d30 = acc.last_30_days;
@@ -444,7 +482,7 @@ async function loadChart() {
             </div>
         `;
 
-        const chartResp = await fetch(API_URL + '/bank-chart');
+        const chartResp = await apiFetch(API_URL + '/bank-chart');
         const chartData = await chartResp.json();
 
         const canvas = document.getElementById('bank-chart');
@@ -508,7 +546,7 @@ async function loadEdgeComparison() {
     tableBox.innerHTML = '';
 
     try {
-        const resp = await fetch(API_URL + '/edge-comparison');
+        const resp = await apiFetch(API_URL + '/edge-comparison');
         const data = await resp.json();
         const o = data.overall;
 
@@ -568,7 +606,7 @@ async function loadEdgeComparison() {
 async function deleteHistory(matchId) {
     if (!confirm('Удалить этот прогноз?')) return;
     try {
-        await fetch(API_URL + '/history/' + matchId, { method: 'DELETE' });
+        await apiFetch(API_URL + '/history/' + matchId, { method: 'DELETE' });
         loadHistory();
         loadStats();
     } catch (e) {
