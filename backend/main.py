@@ -10,6 +10,7 @@ from pathlib import Path
 from collections import defaultdict
 import io
 import csv
+import asyncio
 
 from database import init_db, get_db
 from models import Match, Prediction
@@ -20,26 +21,46 @@ from odds import get_match_odds
 from api_football import get_api_football_odds
 
 
-DATASET_PATH = Path(__file__).parent.parent / "data" / "dataset.csv"
-print(f"[Main] Путь к датасету: {DATASET_PATH}")
-print(f"[Main] Файл существует: {DATASET_PATH.exists()}")
-if DATASET_PATH.exists():
-    load_history_from_dataset(str(DATASET_PATH))
-    print(f"[Main] Команд в истории: {len(_team_history)}")
-else:
-    print(f"[!] dataset.csv не найден")
-
-
+# ===== HEALTH CHECK (нужен для Render!) =====
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 1. Создаём таблицы (быстро)
     await init_db()
+
+    # 2. Запускаем планировщик
     start_scheduler()
-    await sync_matches()
+
+    # 3. Синхронизация матчей — в фоне, чтобы не блокировать старт
+    asyncio.create_task(sync_matches())
+
+    # 4. Загрузка истории — в фоне (3500 матчей = 3-5 секунд)
+    DATASET_PATH = Path(__file__).parent.parent / "data" / "dataset.csv"
+    if DATASET_PATH.exists():
+        asyncio.create_task(_load_history_bg(str(DATASET_PATH)))
+
     yield
     stop_scheduler()
 
 
+async def _load_history_bg(dataset_path):
+    """Загружает историю в фоне, чтобы не блокировать старт сервера."""
+    try:
+        print(f"[Main] Загрузка истории в фоне...")
+        await asyncio.to_thread(load_history_from_dataset, dataset_path)
+        print(f"[Main] История загружена: {len(_team_history)} команд")
+    except Exception as e:
+        print(f"[Main] Ошибка загрузки истории: {e}")
+
+
 app = FastAPI(title="Acwellan API", lifespan=lifespan)
+
+
+# ===== HEALTH CHECK =====
+@app.get("/health")
+async def health_check():
+    """Render пингует этот эндпоинт, чтобы понять, что сервер жив."""
+    return {"status": "ok"}
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -83,7 +104,6 @@ async def create_prediction(match_id: int, db: AsyncSession = Depends(get_db)):
     real_odds = {}
     try:
         real_odds = await get_match_odds(match.league, match.home_team)
-        print(f"[Predict] The Odds: {real_odds}")
     except Exception as e:
         print(f"[Predict] Ошибка The Odds: {e}")
 
@@ -93,7 +113,6 @@ async def create_prediction(match_id: int, db: AsyncSession = Depends(get_db)):
         api_fb_odds = await get_api_football_odds(
             match.league, match.home_team, match.away_team, date_str
         )
-        print(f"[Predict] API-Football: {api_fb_odds}")
     except Exception as e:
         print(f"[Predict] Ошибка API-Football: {e}")
 
@@ -138,6 +157,7 @@ async def create_prediction(match_id: int, db: AsyncSession = Depends(get_db)):
                 "market_prob": p_conf["market_prob"],
                 "edge_pct": p_conf["edge_pct"],
                 "score": p_conf["score"],
+                "source": p_conf.get("source", "model"),
                 "value_class": p_conf["value_class"],
             }
             for p, p_conf in zip(created, predictions)
@@ -211,6 +231,7 @@ async def refresh_prediction(match_id: int, db: AsyncSession = Depends(get_db)):
                 "market_prob": p_conf["market_prob"],
                 "edge_pct": p_conf["edge_pct"],
                 "score": p_conf["score"],
+                "source": p_conf.get("source", "model"),
                 "value_class": p_conf["value_class"],
             }
             for p, p_conf in zip(created, predictions)
