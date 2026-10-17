@@ -1,0 +1,4 @@
+acwellan.db
+*.db
+venv/
+__pycache__/
