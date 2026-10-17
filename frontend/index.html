@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <script defer src="https://cloud.umami.is/script.js" data-website-id="879287d7-68b2-49ea-a42e-14ec29ce5cb8"></script>
+    <title>Acwellan</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <header class="header">
+        <div class="logo">Acwellan</div>
+        <nav class="nav">
+            <button type="button" class="nav-btn active" data-tab="matches">Матчи</button>
+            <button type="button" class="nav-btn" data-tab="history">История</button>
+            <button type="button" class="nav-btn" data-tab="results">Итоги</button>
+            <button type="button" class="nav-btn" data-tab="leagues">Лиги</button>
+            <button type="button" class="nav-btn" data-tab="chart">График</button>
+            <button type="button" class="nav-btn" data-tab="compare">Сравнение</button>
+        </nav>
+    </header>
+
+    <main class="container">
+        <section id="tab-matches" class="tab-content active">
+            <div class="filters">
+                <select id="league-filter">
+                    <option value="all">Все лиги</option>
+                    <option value="EPL">Англия</option>
+                    <option value="LaLiga">Испания</option>
+                    <option value="Bundesliga">Германия</option>
+                    <option value="SerieA">Италия</option>
+                    <option value="Ligue1">Франция</option>
+                    <option value="UCL">Лига чемпионов</option>
+                </select>
+                <input type="date" id="date-filter">
+                <button type="button" id="batch-predict-btn" class="batch-btn">⚡ Прогноз на все матчи</button>
+            </div>
+
+            <div id="batch-progress" class="batch-progress" style="display:none;"></div>
+            <div class="matches-list"></div>
+        </section>
+
+        <section id="tab-history" class="tab-content">
+            <div class="predictions-header">
+                <h2>История прогнозов</h2>
+                <p class="subtitle">Результаты прошлых ставок</p>
+            </div>
+
+            <div id="stats-block" class="stats-block"></div>
+
+            <div class="history-filters">
+                <select id="history-league-filter">
+                    <option value="all">Все лиги</option>
+                    <option value="EPL">Англия</option>
+                    <option value="LaLiga">Испания</option>
+                    <option value="Bundesliga">Германия</option>
+                    <option value="SerieA">Италия</option>
+                    <option value="Ligue1">Франция</option>
+                    <option value="UCL">Лига чемпионов</option>
+                </select>
+                <select id="history-result-filter">
+                    <option value="all">Все результаты</option>
+                    <option value="win">Только WIN</option>
+                    <option value="lose">Только LOSE</option>
+                    <option value="pending">Только ожидание</option>
+                </select>
+                <select id="history-month-filter">
+                    <option value="all">Все месяцы</option>
+                </select>
+                <button type="button" id="export-csv-btn" class="export-btn">Скачать CSV</button>
+            </div>
+
+            <div class="history-list"></div>
+        </section>
+
+        <section id="tab-results" class="tab-content">
+            <div class="predictions-header">
+                <h2>Итоги по месяцам</h2>
+                <p class="subtitle">Расчёт банка при ставке 100$ на каждую ставку</p>
+            </div>
+            <div id="overall-block" class="overall-block"></div>
+            <div id="monthly-table" class="monthly-table"></div>
+        </section>
+
+        <section id="tab-leagues" class="tab-content">
+            <div class="predictions-header">
+                <h2>Статистика по лигам</h2>
+                <p class="subtitle">Точность и банк по каждой лиге</p>
+            </div>
+            <div id="leagues-table" class="monthly-table"></div>
+        </section>
+
+        <section id="tab-chart" class="tab-content">
+            <div class="predictions-header">
+                <h2>График банка</h2>
+                <p class="subtitle">Динамика банка по месяцам + точность за 30 дней</p>
+            </div>
+            <div id="accuracy-block" class="accuracy-block"></div>
+            <div class="chart-container"><canvas id="bank-chart"></canvas></div>
+        </section>
+
+        <section id="tab-compare" class="tab-content">
+            <div class="predictions-header">
+                <h2>Сравнение прогнозов</h2>
+                <p class="subtitle">Насколько модель обгоняет рынок (по edge)</p>
+            </div>
+            <div id="edge-overall-block" class="overall-block"></div>
+            <div class="compare-hint">
+                <p>Группы по <b>edge</b> — преимущество модели над рынком:</p>
+                <p>Если модель <b>работает</b>, то чем выше edge — тем выше WIN% и банк.</p>
+            </div>
+            <div id="edge-table" class="monthly-table"></div>
+        </section>
+    </main>
+
+    <script>
+        var s = document.createElement('script');
+        s.src = 'script.js?t=' + Date.now();
+        document.body.appendChild(s);
+    </script>
+</body>
+</html>
