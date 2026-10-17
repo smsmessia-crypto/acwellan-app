@@ -1,4 +1,4 @@
-const API_URL = "http://127.0.0.1:8000/api";
+const API_URL = "https://acwellan-app.onrender.com/api";
 let bankChartInstance = null;
 
 document.querySelectorAll('.nav-btn').forEach(btn => {
