@@ -8,3 +8,4 @@ pydantic>=2.13.0
 asyncpg>=0.30.0
 numpy
 pandas
+scikit-learn
