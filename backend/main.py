@@ -1,7 +1,8 @@
 # backend/main.py
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import select, desc, delete as sql_delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from contextlib import asynccontextmanager
@@ -11,6 +12,7 @@ from collections import defaultdict
 import io
 import csv
 import asyncio
+import secrets
 
 from database import init_db, get_db
 from models import Match, Prediction
@@ -20,20 +22,32 @@ from predictor import predict, load_history_from_dataset, _team_history
 from odds import get_match_odds
 from api_football import get_api_football_odds
 
+# ===== АВТОРИЗАЦИЯ =====
+security = HTTPBasic()
 
-# ===== HEALTH CHECK (нужен для Render!) =====
+AUTH_USER = "ac"
+AUTH_PASS = "wellan"   # ⚠️ ПОМЕНЯЙ ПАРОЛЬ!
+
+
+def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = secrets.compare_digest(credentials.username, AUTH_USER)
+    correct_password = secrets.compare_digest(credentials.password, AUTH_PASS)
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный логин или пароль",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+# ===== HEALTH CHECK + LIFESPAN =====
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. Создаём таблицы (быстро)
     await init_db()
-
-    # 2. Запускаем планировщик
     start_scheduler()
-
-    # 3. Синхронизация матчей — в фоне, чтобы не блокировать старт
     asyncio.create_task(sync_matches())
 
-    # 4. Загрузка истории — в фоне (3500 матчей = 3-5 секунд)
     DATASET_PATH = Path(__file__).parent.parent / "data" / "dataset.csv"
     if DATASET_PATH.exists():
         asyncio.create_task(_load_history_bg(str(DATASET_PATH)))
@@ -43,7 +57,6 @@ async def lifespan(app: FastAPI):
 
 
 async def _load_history_bg(dataset_path):
-    """Загружает историю в фоне, чтобы не блокировать старт сервера."""
     try:
         print(f"[Main] Загрузка истории в фоне...")
         await asyncio.to_thread(load_history_from_dataset, dataset_path)
@@ -55,10 +68,8 @@ async def _load_history_bg(dataset_path):
 app = FastAPI(title="Acwellan API", lifespan=lifespan)
 
 
-# ===== HEALTH CHECK =====
 @app.get("/health")
 async def health_check():
-    """Render пингует этот эндпоинт, чтобы понять, что сервер жив."""
     return {"status": "ok"}
 
 
@@ -71,8 +82,10 @@ app.add_middleware(
 )
 
 
+# ===== МАТЧИ (защищено) =====
 @app.get("/api/matches", response_model=list[MatchOut])
 async def get_matches(
+    user: str = Depends(verify_credentials),
     league: str = "all",
     date: str = None,
     db: AsyncSession = Depends(get_db)
@@ -95,8 +108,13 @@ async def get_matches(
     return result.scalars().all()
 
 
+# ===== ПРОГНОЗ (защищено) =====
 @app.post("/api/predict/{match_id}")
-async def create_prediction(match_id: int, db: AsyncSession = Depends(get_db)):
+async def create_prediction(
+    match_id: int,
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     match = await db.get(Match, match_id)
     if not match:
         raise HTTPException(404, "Матч не найден")
@@ -168,7 +186,11 @@ async def create_prediction(match_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/api/predict-refresh/{match_id}")
-async def refresh_prediction(match_id: int, db: AsyncSession = Depends(get_db)):
+async def refresh_prediction(
+    match_id: int,
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     match = await db.get(Match, match_id)
     if not match:
         raise HTTPException(404, "Матч не найден")
@@ -243,6 +265,7 @@ async def refresh_prediction(match_id: int, db: AsyncSession = Depends(get_db)):
 
 @app.post("/api/predict-batch")
 async def predict_batch(
+    user: str = Depends(verify_credentials),
     league: str = "all",
     date: str = None,
     db: AsyncSession = Depends(get_db)
@@ -322,6 +345,7 @@ async def predict_batch(
 
 @app.get("/api/history")
 async def get_history(
+    user: str = Depends(verify_credentials),
     league: str = "all",
     result: str = "all",
     month: str = "all",
@@ -365,7 +389,11 @@ async def get_history(
 
 
 @app.delete("/api/history/{match_id}")
-async def delete_history(match_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_history(
+    match_id: int,
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     await db.execute(sql_delete(Prediction).where(Prediction.match_id == match_id))
     await db.commit()
     return {"ok": True}
@@ -375,6 +403,7 @@ async def delete_history(match_id: int, db: AsyncSession = Depends(get_db)):
 async def update_prediction_result(
     prediction_id: int,
     result: str,
+    user: str = Depends(verify_credentials),
     db: AsyncSession = Depends(get_db)
 ):
     if result not in ("win", "lose", "reset"):
@@ -394,7 +423,10 @@ async def update_prediction_result(
 
 
 @app.get("/api/stats")
-async def get_stats(db: AsyncSession = Depends(get_db)):
+async def get_stats(
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     total_query = await db.execute(select(func.count(Prediction.id)))
     total = total_query.scalar() or 0
 
@@ -411,7 +443,10 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/api/monthly-results")
-async def get_monthly_results(db: AsyncSession = Depends(get_db)):
+async def get_monthly_results(
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     BET_SIZE = 100.0
     result = await db.execute(select(Prediction, Match).join(Match, Prediction.match_id == Match.id))
     rows = result.all()
@@ -463,7 +498,10 @@ async def get_monthly_results(db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/api/league-stats")
-async def get_league_stats(db: AsyncSession = Depends(get_db)):
+async def get_league_stats(
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     BET_SIZE = 100.0
     result = await db.execute(select(Prediction, Match).join(Match, Prediction.match_id == Match.id))
     rows = result.all()
@@ -513,7 +551,10 @@ async def get_league_stats(db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/api/bank-chart")
-async def get_bank_chart(db: AsyncSession = Depends(get_db)):
+async def get_bank_chart(
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     BET_SIZE = 100.0
     result = await db.execute(select(Prediction, Match).join(Match, Prediction.match_id == Match.id))
     rows = result.all()
@@ -548,7 +589,10 @@ async def get_bank_chart(db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/api/accuracy-30d")
-async def get_accuracy_30d(db: AsyncSession = Depends(get_db)):
+async def get_accuracy_30d(
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     now = datetime.utcnow()
     month_ago = now - timedelta(days=30)
 
@@ -590,7 +634,10 @@ async def get_accuracy_30d(db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/api/edge-comparison")
-async def get_edge_comparison(db: AsyncSession = Depends(get_db)):
+async def get_edge_comparison(
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     BET_SIZE = 100.0
     result = await db.execute(select(Prediction, Match).join(Match, Prediction.match_id == Match.id))
     rows = result.all()
@@ -666,7 +713,10 @@ async def get_edge_comparison(db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/api/export-csv")
-async def export_csv(db: AsyncSession = Depends(get_db)):
+async def export_csv(
+    user: str = Depends(verify_credentials),
+    db: AsyncSession = Depends(get_db)
+):
     result = await db.execute(
         select(Prediction, Match).join(Match, Prediction.match_id == Match.id)
         .order_by(desc(Match.match_date))
