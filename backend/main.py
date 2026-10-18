@@ -55,7 +55,11 @@ app = FastAPI(title="Acwellan API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://acwellan-app.vercel.app",  # Твой фронтенд на Vercel
+        "http://localhost:5500",            # Для локальной разработки (Live Server)
+        "http://127.0.0.1:5500",            # Для локальной разработки (file://)
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
