@@ -22,7 +22,6 @@ function apiFetch(url, options = {}) {
     return fetch(url, options);
 }
 
-// Проверка авторизации при загрузке
 const token = getToken();
 if (!token) {
     document.getElementById('login-screen').style.display = 'flex';
