@@ -12,3 +12,4 @@ scikit-learn
 xgboost
 requests
 greenlet
+python-jose[cryptography]
