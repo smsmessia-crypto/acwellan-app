@@ -6,7 +6,6 @@ from database import Base
 
 class Match(Base):
     __tablename__ = "matches"
-
     id = Column(Integer, primary_key=True, index=True)
     event_id = Column(String, unique=True, index=True)
     league = Column(String)
@@ -27,11 +26,11 @@ class Match(Base):
 
 class Prediction(Base):
     __tablename__ = "predictions"
-
     id = Column(Integer, primary_key=True, index=True)
     match_id = Column(Integer, index=True)
     bet_name = Column(String)
     odds = Column(Float)
     confidence = Column(Float)
     result = Column(String, nullable=True)
+    user_id = Column(String, index=True, nullable=True)  # <-- НОВОЕ ПОЛЕ
     created_at = Column(DateTime, default=datetime.utcnow)
