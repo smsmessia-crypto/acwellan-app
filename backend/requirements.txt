@@ -13,3 +13,4 @@ xgboost
 requests
 greenlet
 python-jose[cryptography]
+httpx
