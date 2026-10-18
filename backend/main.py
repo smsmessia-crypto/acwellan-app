@@ -25,8 +25,51 @@ from auth import (
     GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_REDIRECT_URI
 )
 
-# ===== GITHUB OAUTH =====
+
+# ===== LIFESPAN =====
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    start_scheduler()
+    asyncio.create_task(sync_matches())
+
+    DATASET_PATH = Path(__file__).parent.parent / "data" / "dataset.csv"
+    if DATASET_PATH.exists():
+        asyncio.create_task(_load_history_bg(str(DATASET_PATH)))
+
+    yield
+    stop_scheduler()
+
+
+async def _load_history_bg(dataset_path):
+    try:
+        print(f"[Main] Загрузка истории в фоне...")
+        await asyncio.to_thread(load_history_from_dataset, dataset_path)
+        print(f"[Main] История загружена: {len(_team_history)} команд")
+    except Exception as e:
+        print(f"[Main] Ошибка загрузки истории: {e}")
+
+
+# ===== СОЗДАНИЕ ПРИЛОЖЕНИЯ =====
 app = FastAPI(title="Acwellan API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
+# ===== GITHUB OAUTH =====
+@app.get("/auth/github")
+async def github_login():
     url = (
         f"https://github.com/login/oauth/authorize"
         f"?client_id={GITHUB_CLIENT_ID}"
@@ -68,46 +111,6 @@ async def github_callback(code: str):
     jwt_token = create_access_token(user_id)
     frontend_url = f"https://acwellan-app.vercel.app/?token={jwt_token}"
     return RedirectResponse(frontend_url)
-
-
-# ===== LIFESPAN =====
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db()
-    start_scheduler()
-    asyncio.create_task(sync_matches())
-
-    DATASET_PATH = Path(__file__).parent.parent / "data" / "dataset.csv"
-    if DATASET_PATH.exists():
-        asyncio.create_task(_load_history_bg(str(DATASET_PATH)))
-
-    yield
-    stop_scheduler()
-
-
-async def _load_history_bg(dataset_path):
-    try:
-        print(f"[Main] Загрузка истории в фоне...")
-        await asyncio.to_thread(load_history_from_dataset, dataset_path)
-        print(f"[Main] История загружена: {len(_team_history)} команд")
-    except Exception as e:
-        print(f"[Main] Ошибка загрузки истории: {e}")
-
-
-app = FastAPI(title="Acwellan API", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
 
 
 # ===== МАТЧИ =====
