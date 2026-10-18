@@ -1,8 +1,7 @@
 # backend/main.py
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import StreamingResponse, RedirectResponse
 from sqlalchemy import select, desc, delete as sql_delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from contextlib import asynccontextmanager
@@ -12,7 +11,7 @@ from collections import defaultdict
 import io
 import csv
 import asyncio
-import secrets
+import httpx
 
 from database import init_db, get_db
 from models import Match, Prediction
@@ -21,27 +20,59 @@ from scheduler import start_scheduler, stop_scheduler, sync_matches
 from predictor import predict, load_history_from_dataset, _team_history
 from odds import get_match_odds
 from api_football import get_api_football_odds
+from auth import (
+    create_access_token, get_current_user,
+    GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_REDIRECT_URI
+)
 
-# ===== АВТОРИЗАЦИЯ =====
-security = HTTPBasic()
+# ===== GITHUB OAUTH =====
 
-AUTH_USER = "ac"
-AUTH_PASS = "wellan"   # ⚠️ ПОМЕНЯЙ ПАРОЛЬ!
+@app.get("/auth/github")
+async def github_login():
+    url = (
+        f"https://github.com/login/oauth/authorize"
+        f"?client_id={GITHUB_CLIENT_ID}"
+        f"&redirect_uri={GITHUB_REDIRECT_URI}"
+        f"&scope=read:user"
+    )
+    return RedirectResponse(url)
 
 
-def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
-    correct_username = secrets.compare_digest(credentials.username, AUTH_USER)
-    correct_password = secrets.compare_digest(credentials.password, AUTH_PASS)
-    if not (correct_username and correct_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный логин или пароль",
-            headers={"WWW-Authenticate": "Basic"},
+@app.get("/auth/github/callback")
+async def github_callback(code: str):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": GITHUB_CLIENT_ID,
+                "client_secret": GITHUB_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": GITHUB_REDIRECT_URI,
+            },
+            headers={"Accept": "application/json"}
         )
-    return credentials.username
+        token_data = resp.json()
+        access_token = token_data.get("access_token")
+
+        if not access_token:
+            raise HTTPException(400, "Не удалось получить токен от GitHub")
+
+        user_resp = await client.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        user_data = user_resp.json()
+        user_id = user_data.get("login")
+
+        if not user_id:
+            raise HTTPException(400, "Не удалось получить имя пользователя")
+
+    jwt_token = create_access_token(user_id)
+    frontend_url = f"https://acwellan-app.vercel.app/?token={jwt_token}"
+    return RedirectResponse(frontend_url)
 
 
-# ===== HEALTH CHECK + LIFESPAN =====
+# ===== LIFESPAN =====
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -67,12 +98,6 @@ async def _load_history_bg(dataset_path):
 
 app = FastAPI(title="Acwellan API", lifespan=lifespan)
 
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
-
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -82,10 +107,15 @@ app.add_middleware(
 )
 
 
-# ===== МАТЧИ (защищено) =====
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
+# ===== МАТЧИ =====
 @app.get("/api/matches", response_model=list[MatchOut])
 async def get_matches(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     league: str = "all",
     date: str = None,
     db: AsyncSession = Depends(get_db)
@@ -108,11 +138,11 @@ async def get_matches(
     return result.scalars().all()
 
 
-# ===== ПРОГНОЗ (защищено) =====
+# ===== ПРОГНОЗ =====
 @app.post("/api/predict/{match_id}")
 async def create_prediction(
     match_id: int,
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     match = await db.get(Match, match_id)
@@ -155,6 +185,7 @@ async def create_prediction(
             bet_name=p["bet_name"],
             odds=p["odds"],
             confidence=p["confidence"],
+            user_id=user,
         )
         db.add(pred)
         created.append(pred)
@@ -188,14 +219,19 @@ async def create_prediction(
 @app.post("/api/predict-refresh/{match_id}")
 async def refresh_prediction(
     match_id: int,
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     match = await db.get(Match, match_id)
     if not match:
         raise HTTPException(404, "Матч не найден")
 
-    await db.execute(sql_delete(Prediction).where(Prediction.match_id == match_id))
+    await db.execute(
+        sql_delete(Prediction).where(
+            Prediction.match_id == match_id,
+            Prediction.user_id == user
+        )
+    )
     await db.commit()
 
     real_odds = {}
@@ -233,6 +269,7 @@ async def refresh_prediction(
             bet_name=p["bet_name"],
             odds=p["odds"],
             confidence=p["confidence"],
+            user_id=user,
         )
         db.add(pred)
         created.append(pred)
@@ -265,7 +302,7 @@ async def refresh_prediction(
 
 @app.post("/api/predict-batch")
 async def predict_batch(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     league: str = "all",
     date: str = None,
     db: AsyncSession = Depends(get_db)
@@ -293,7 +330,10 @@ async def predict_batch(
 
     for match in matches:
         existing = await db.execute(
-            select(Prediction).where(Prediction.match_id == match.id)
+            select(Prediction).where(
+                Prediction.match_id == match.id,
+                Prediction.user_id == user
+            )
         )
         if existing.scalars().first():
             skipped += 1
@@ -327,6 +367,7 @@ async def predict_batch(
                     bet_name=p["bet_name"],
                     odds=p["odds"],
                     confidence=p["confidence"],
+                    user_id=user,
                 ))
                 created_total += 1
 
@@ -343,15 +384,16 @@ async def predict_batch(
     }
 
 
+# ===== ИСТОРИЯ =====
 @app.get("/api/history")
 async def get_history(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     league: str = "all",
     result: str = "all",
     month: str = "all",
     db: AsyncSession = Depends(get_db)
 ):
-    query = select(Prediction, Match).join(Match, Prediction.match_id == Match.id)
+    query = select(Prediction, Match).join(Match, Prediction.match_id == Match.id).where(Prediction.user_id == user)
 
     if league != "all":
         query = query.where(Match.league == league)
@@ -391,10 +433,15 @@ async def get_history(
 @app.delete("/api/history/{match_id}")
 async def delete_history(
     match_id: int,
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    await db.execute(sql_delete(Prediction).where(Prediction.match_id == match_id))
+    await db.execute(
+        sql_delete(Prediction).where(
+            Prediction.match_id == match_id,
+            Prediction.user_id == user
+        )
+    )
     await db.commit()
     return {"ok": True}
 
@@ -403,7 +450,7 @@ async def delete_history(
 async def update_prediction_result(
     prediction_id: int,
     result: str,
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     if result not in ("win", "lose", "reset"):
@@ -412,6 +459,9 @@ async def update_prediction_result(
     pred = await db.get(Prediction, prediction_id)
     if not pred:
         raise HTTPException(404, "Прогноз не найден")
+
+    if pred.user_id != user:
+        raise HTTPException(403, "Это не ваш прогноз")
 
     if result == "reset":
         pred.result = None
@@ -422,18 +472,31 @@ async def update_prediction_result(
     return {"ok": True, "id": pred.id, "result": pred.result}
 
 
+# ===== СТАТИСТИКА =====
 @app.get("/api/stats")
 async def get_stats(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    total_query = await db.execute(select(func.count(Prediction.id)))
+    total_query = await db.execute(
+        select(func.count(Prediction.id)).where(Prediction.user_id == user)
+    )
     total = total_query.scalar() or 0
 
-    win_query = await db.execute(select(func.count(Prediction.id)).where(Prediction.result == "win"))
+    win_query = await db.execute(
+        select(func.count(Prediction.id)).where(
+            Prediction.result == "win",
+            Prediction.user_id == user
+        )
+    )
     wins = win_query.scalar() or 0
 
-    lose_query = await db.execute(select(func.count(Prediction.id)).where(Prediction.result == "lose"))
+    lose_query = await db.execute(
+        select(func.count(Prediction.id)).where(
+            Prediction.result == "lose",
+            Prediction.user_id == user
+        )
+    )
     loses = lose_query.scalar() or 0
 
     pending = total - wins - loses
@@ -444,11 +507,14 @@ async def get_stats(
 
 @app.get("/api/monthly-results")
 async def get_monthly_results(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     BET_SIZE = 100.0
-    result = await db.execute(select(Prediction, Match).join(Match, Prediction.match_id == Match.id))
+    result = await db.execute(
+        select(Prediction, Match).join(Match, Prediction.match_id == Match.id)
+        .where(Prediction.user_id == user)
+    )
     rows = result.all()
 
     months = defaultdict(lambda: {"total": 0, "wins": 0, "loses": 0, "bank": 0.0})
@@ -499,11 +565,14 @@ async def get_monthly_results(
 
 @app.get("/api/league-stats")
 async def get_league_stats(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     BET_SIZE = 100.0
-    result = await db.execute(select(Prediction, Match).join(Match, Prediction.match_id == Match.id))
+    result = await db.execute(
+        select(Prediction, Match).join(Match, Prediction.match_id == Match.id)
+        .where(Prediction.user_id == user)
+    )
     rows = result.all()
 
     leagues = defaultdict(lambda: {"league_name": "", "total": 0, "wins": 0, "loses": 0, "bank": 0.0})
@@ -552,11 +621,14 @@ async def get_league_stats(
 
 @app.get("/api/bank-chart")
 async def get_bank_chart(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     BET_SIZE = 100.0
-    result = await db.execute(select(Prediction, Match).join(Match, Prediction.match_id == Match.id))
+    result = await db.execute(
+        select(Prediction, Match).join(Match, Prediction.match_id == Match.id)
+        .where(Prediction.user_id == user)
+    )
     rows = result.all()
 
     months = defaultdict(lambda: {"bank": 0.0})
@@ -590,13 +662,16 @@ async def get_bank_chart(
 
 @app.get("/api/accuracy-30d")
 async def get_accuracy_30d(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     now = datetime.utcnow()
     month_ago = now - timedelta(days=30)
 
-    result = await db.execute(select(Prediction, Match).join(Match, Prediction.match_id == Match.id))
+    result = await db.execute(
+        select(Prediction, Match).join(Match, Prediction.match_id == Match.id)
+        .where(Prediction.user_id == user)
+    )
     rows = result.all()
 
     d30 = {"total": 0, "wins": 0, "loses": 0, "bank": 0.0}
@@ -635,11 +710,14 @@ async def get_accuracy_30d(
 
 @app.get("/api/edge-comparison")
 async def get_edge_comparison(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     BET_SIZE = 100.0
-    result = await db.execute(select(Prediction, Match).join(Match, Prediction.match_id == Match.id))
+    result = await db.execute(
+        select(Prediction, Match).join(Match, Prediction.match_id == Match.id)
+        .where(Prediction.user_id == user)
+    )
     rows = result.all()
 
     groups = {
@@ -714,11 +792,12 @@ async def get_edge_comparison(
 
 @app.get("/api/export-csv")
 async def export_csv(
-    user: str = Depends(verify_credentials),
+    user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
         select(Prediction, Match).join(Match, Prediction.match_id == Match.id)
+        .where(Prediction.user_id == user)
         .order_by(desc(Match.match_date))
     )
     rows = result.all()
