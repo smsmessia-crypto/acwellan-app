@@ -2,40 +2,32 @@ const API_URL = "https://acwellan-app.onrender.com/api";
 let bankChartInstance = null;
 
 // ===== АВТОРИЗАЦИЯ =====
-function login() {
-    const user = document.getElementById('auth-user').value;
-    const pass = document.getElementById('auth-pass').value;
-
-    fetch(API_URL + '/matches', {
-        headers: {
-            'Authorization': 'Basic ' + btoa(user + ':' + pass)
-        }
-    }).then(resp => {
-        if (resp.ok) {
-            localStorage.setItem('auth', btoa(user + ':' + pass));
-            document.getElementById('auth-modal').style.display = 'none';
-            loadMatches();
-        } else {
-            document.getElementById('auth-error').textContent = 'Неверный логин или пароль';
-        }
-    }).catch(() => {
-        document.getElementById('auth-error').textContent = 'Ошибка подключения к серверу';
-    });
+function getToken() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    if (token) {
+        localStorage.setItem('token', token);
+        window.history.replaceState({}, '', window.location.pathname);
+        return token;
+    }
+    return localStorage.getItem('token');
 }
 
 function apiFetch(url, options = {}) {
-    const auth = localStorage.getItem('auth');
+    const token = getToken();
     options.headers = options.headers || {};
-    if (auth) {
-        options.headers['Authorization'] = 'Basic ' + auth;
+    if (token) {
+        options.headers['Authorization'] = 'Bearer ' + token;
     }
     return fetch(url, options);
 }
 
-// Проверяем, есть ли уже пароль в localStorage
-const savedAuth = localStorage.getItem('auth');
-if (savedAuth) {
-    document.getElementById('auth-modal').style.display = 'none';
+// Проверка авторизации при загрузке
+const token = getToken();
+if (!token) {
+    document.getElementById('login-screen').style.display = 'flex';
+} else {
+    document.getElementById('login-screen').style.display = 'none';
 }
 
 // ===== ВКЛАДКИ =====
