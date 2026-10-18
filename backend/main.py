@@ -26,9 +26,7 @@ from auth import (
 )
 
 # ===== GITHUB OAUTH =====
-
-@app.get("/auth/github")
-async def github_login():
+app = FastAPI(title="Acwellan API", lifespan=lifespan)
     url = (
         f"https://github.com/login/oauth/authorize"
         f"?client_id={GITHUB_CLIENT_ID}"
