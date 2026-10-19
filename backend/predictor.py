@@ -26,11 +26,11 @@ FALLBACK_SCORED = 1.3
 FALLBACK_CONCEDED = 1.3
 FALLBACK_ELO = 1500
 
+# Загружаем только нужные модели
 _outcome = xgb.XGBClassifier(); _outcome.load_model(os.path.join(MODELS_DIR, "outcome_model.json"))
 _over25 = xgb.XGBClassifier(); _over25.load_model(os.path.join(MODELS_DIR, "over25_model.json"))
 _btts = xgb.XGBClassifier(); _btts.load_model(os.path.join(MODELS_DIR, "btts_model.json"))
-_corners = xgb.XGBClassifier(); _corners.load_model(os.path.join(MODELS_DIR, "corners_model.json"))
-_cards = xgb.XGBClassifier(); _cards.load_model(os.path.join(MODELS_DIR, "cards_model.json"))
+# Углы и карточки больше не загружаем!
 
 _team_history = defaultdict(lambda: deque(maxlen=5))
 _team_elo = defaultdict(lambda: ELO_START)
@@ -142,8 +142,6 @@ def predict(match: dict, real_odds: dict = None, api_fb_odds: dict = None) -> di
     p_outcome = _outcome.predict_proba(X)[0]
     p_over25 = float(_over25.predict_proba(X)[0][1])
     p_btts = float(_btts.predict_proba(X)[0][1])
-    p_corners = float(_corners.predict_proba(X)[0][1])
-    p_cards = float(_cards.predict_proba(X)[0][1])
 
     p_home = float(p_outcome[0])
     p_draw = float(p_outcome[1])
@@ -152,6 +150,7 @@ def predict(match: dict, real_odds: dict = None, api_fb_odds: dict = None) -> di
     ro = real_odds or {}
     af = api_fb_odds or {}
 
+    # ===== КЭФЫ (только голы) =====
     oh_real = ro.get("home") or af.get("home")
     od_real = ro.get("draw") or af.get("draw")
     oa_real = ro.get("away") or af.get("away")
@@ -165,16 +164,6 @@ def predict(match: dict, real_odds: dict = None, api_fb_odds: dict = None) -> di
 
     o_over25 = o_over25_real if o_over25_real else _model_odds(p_over25)
     o_under25 = o_under25_real if o_under25_real else _model_odds(1 - p_over25)
-
-    # Углы и карточки — реальные или модельные
-    o_corners_over_real = af.get("corners_over")
-    o_cards_over_real = af.get("cards_over")
-
-    o_corners_95 = o_corners_over_real if o_corners_over_real else _model_odds(p_corners)
-    o_corners_105 = _model_odds(p_corners * 0.8)
-
-    o_cards_35 = o_cards_over_real if o_cards_over_real else _model_odds(p_cards)
-    o_cards_45 = _model_odds(p_cards * 0.75)
 
     # ===== СТАВКА 1: ИСХОД =====
     outcome_options = [
@@ -218,43 +207,15 @@ def predict(match: dict, real_odds: dict = None, api_fb_odds: dict = None) -> di
                 o["score"] = o["prob"] * 1.0
         bet2 = max(total_options, key=lambda x: x["score"])
 
-    # ===== СТАВКА 3: УГЛЫ ИЛИ КАРТОЧКИ (модель выбирает лучшую) =====
-    third_all = [
-        # Углы 9.5
-        {"name": "Угловые больше 9.5", "prob": p_corners, "odds": o_corners_95,
-         "market": "third", "source": "real" if o_corners_over_real else "model"},
-        # Углы 10.5
-        {"name": "Угловые больше 10.5", "prob": p_corners * 0.8, "odds": o_corners_105,
-         "market": "third", "source": "model"},
-        # Карточки 3.5
-        {"name": "Карточки больше 3.5", "prob": p_cards, "odds": o_cards_35,
-         "market": "third", "source": "real" if o_cards_over_real else "model"},
-        # Карточки 4.5
-        {"name": "Карточки больше 4.5", "prob": p_cards * 0.75, "odds": o_cards_45,
-         "market": "third", "source": "model"},
-    ]
-    third_all = [o for o in third_all if MIN_ODDS <= o["odds"] <= MAX_ODDS]
-
-    bet3 = None
-    if third_all:
-        for o in third_all:
-            implied = 1 / o["odds"]
-            o["value"] = o["prob"] - implied
-            if o["source"] == "real":
-                o["score"] = o["prob"] * 0.5 + o["value"] * 0.5
-            else:
-                o["score"] = o["prob"] * 1.0
-        bet3 = max(third_all, key=lambda x: x["score"])
-
-    # ===== СОБИРАЕМ ТРОЙКУ =====
-    chosen = [b for b in [bet1, bet2, bet3] if b is not None]
+    # ===== СОБИРАЕМ ТРОЙКУ (только 2 ставки, так как 3-я убрана) =====
+    chosen = [b for b in [bet1, bet2] if b is not None]
 
     # ===== СИМУЛЯЦИЯ =====
     from simulator import simulate_match
     sim = simulate_match(
         p_home=p_home, p_draw=p_draw, p_away=p_away,
         p_over25=p_over25, p_btts=p_btts,
-        p_corners_over=p_corners, p_cards_over=p_cards,
+        p_corners_over=0.5, p_cards_over=0.5,  # заглушка для симуляции
         n_sims=100000,
     )
 
