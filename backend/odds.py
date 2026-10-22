@@ -1,12 +1,8 @@
 # backend/odds.py
-"""
-Кэфы из The Odds API (П1/Х/П2 + Тотал 2.5).
-Остальные рынки — через API-Football (см. api_football.py).
-"""
 import httpx
 from datetime import datetime, timedelta
 
-ODDS_API_KEY = "795ad4b7448c79b120c7670640fce1f7"
+ODDS_API_KEY = "795ad4b7448c79b120c7670640fce1f7" # Твой ключ
 BASE_URL = "https://api.the-odds-api.com/v4/sports"
 
 LEAGUE_MAP = {
@@ -22,11 +18,37 @@ _cache = {}
 _cache_time = {}
 CACHE_TTL = timedelta(hours=12)
 
+# Слова, которые нужно игнорировать при сравнении названий команд
+# Это решает проблему "FC Internazionale" vs "Inter Milan" и "Aston Villa FC" vs "Aston Villa"
+SKIP_WORDS = {
+    "fc", "cfc", "ac", "sc", "afc", "cf", "as", "ss", "ssc", "cd", "ud",
+    "united", "city", "town", "athletic", "sporting", "real", "atletico",
+    "inter", "internazionale", "milano", "milan", # Для Интера
+    "aston", "villa", # Для Астон Виллы
+}
+
 
 def _is_cache_valid(key: str) -> bool:
     if key not in _cache_time:
         return False
     return datetime.utcnow() - _cache_time[key] < CACHE_TTL
+
+
+def _normalize(name: str) -> str:
+    """Убирает лишние слова и приводит к нижнему регистру."""
+    if not name:
+        return ""
+    parts = []
+    for w in name.lower().strip().split():
+        w = w.replace(".", "").replace(",", "").strip()
+        if not w:
+            continue
+        if w in SKIP_WORDS:
+            continue
+        if w.isdigit():
+            continue
+        parts.append(w)
+    return " ".join(parts) if parts else name.lower().strip()
 
 
 async def fetch_league_odds(league_key: str) -> dict:
@@ -106,21 +128,33 @@ async def get_match_odds(league_key: str, home_team: str) -> dict:
     if not all_odds:
         return {}
 
-    home_lower = home_team.lower().strip()
+    target_home = _normalize(home_team)
 
-    if home_lower in all_odds:
-        return all_odds[home_lower]
+    # 1. Прямое совпадение (после нормализации)
+    for api_home, odds in all_odds.items():
+        if _normalize(api_home) == target_home:
+            return odds
 
-    skip_words = {"fc", "cfc", "ac", "sc", "afc", "cf", "as", "ss", "ssc", "cd", "ud"}
-    parts = [w for w in home_lower.split() if w not in skip_words]
+    # 2. Частичное совпадение (первое слово)
+    target_parts = target_home.split()
+    if not target_parts:
+        return {}
+
+    target_first = target_parts[0]
 
     for api_home, odds in all_odds.items():
-        api_parts = [w for w in api_home.split() if w not in skip_words]
+        api_parts = _normalize(api_home).split()
+        if not api_parts:
+            continue
+        api_first = api_parts[0]
 
-        if parts and api_parts and parts[0] == api_parts[0]:
+        # Сравниваем первые значимые слова
+        if target_first == api_first:
             return odds
 
-        if parts and (parts[0] in api_home or api_home in home_lower):
+        # Или если одно слово содержится в другом (для "Астон Вилла" и "Aston Villa")
+        if target_first in api_home or api_first in home_team.lower():
             return odds
 
+    print(f"[Odds] Не удалось сопоставить '{home_team}' с командами из API.")
     return {}
