@@ -132,10 +132,6 @@ def build_match_features(match: dict) -> pd.DataFrame:
 
 
 def predict(match: dict, real_odds: dict = None) -> dict:
-    """
-    Возвращает прогноз, если есть реальные кэфы.
-    Разрешаем ставки с Edge > -5% (допускаем небольшое расхождение с рынком).
-    """
     ro = real_odds or {}
 
     oh_real = ro.get("home")
@@ -144,9 +140,14 @@ def predict(match: dict, real_odds: dict = None) -> dict:
     o_over25_real = ro.get("over25")
     o_under25_real = ro.get("under25")
 
+    # Если API не дал кэфы, подставляем базовые (средние), чтобы прогноз всё равно сформировался
     if not all([oh_real, od_real, oa_real, o_over25_real, o_under25_real]):
-        print(f"[Predictor] Не хватает реальных кэфов для {match['home_team']} — {match['away_team']}.")
-        return {"predictions": [], "simulation": {}}
+        print(f"[Predictor] Нет реальных кэфов для {match['home_team']} — {match['away_team']}. Используем fallback.")
+        oh_real = oh_real or 2.10
+        od_real = od_real or 3.40
+        oa_real = oa_real or 3.20
+        o_over25_real = o_over25_real or 1.85
+        o_under25_real = o_under25_real or 1.95
 
     X = build_match_features(match)
     p_outcome = _outcome.predict_proba(X)[0]
@@ -207,13 +208,17 @@ def predict(match: dict, real_odds: dict = None) -> dict:
         return {"predictions": [], "simulation": {}}
 
     # ===== СИМУЛЯЦИЯ =====
-    from simulator import simulate_match
-    sim = simulate_match(
-        p_home=p_home, p_draw=p_draw, p_away=p_away,
-        p_over25=p_over25, p_btts=p_btts,
-        p_corners_over=0.5, p_cards_over=p_cards,
-        n_sims=100000,
-    )
+    try:
+        from simulator import simulate_match
+        sim = simulate_match(
+            p_home=p_home, p_draw=p_draw, p_away=p_away,
+            p_over25=p_over25, p_btts=p_btts,
+            p_corners_over=0.5, p_cards_over=p_cards,
+            n_sims=100000,
+        )
+    except Exception as e:
+        print(f"[Simulator] Ошибка: {e}")
+        sim = {}
 
     return {
         "predictions": [
@@ -225,7 +230,7 @@ def predict(match: dict, real_odds: dict = None) -> dict:
                 "value": round(float(c["value"]), 3),
                 "edge_pct": round(float(c["value"] * 100), 1),
                 "score": round(float(c["score"]), 3),
-                "source": "real",
+                "source": "real" if real_odds and all(real_odds.values()) else "fallback",
                 "value_class": (
                     "value-pos" if c["value"] > 0.03
                     else ("value-neutral" if c["value"] > 0 else "value-neg")
@@ -237,15 +242,9 @@ def predict(match: dict, real_odds: dict = None) -> dict:
     }
 
 
-# ===== ДОБАВЛЕНО: единая точка получения кэфов =====
+# ===== Единая точка получения кэфов =====
 async def get_match_odds(league: str, home_team: str, away_team: str, match_date) -> dict:
-    """
-    Обёртка над api_football.get_api_football_odds.
-    match_date может быть datetime или str — приводим к 'YYYY-MM-DD'.
-    Возвращает dict: home/draw/away/over25/under25/... (пустой, если не нашли).
-    """
     if not match_date:
-        print(f"[Odds] Нет даты для {home_team} — {away_team}, кэфы не запрашиваем")
         return {}
 
     if hasattr(match_date, "strftime"):
