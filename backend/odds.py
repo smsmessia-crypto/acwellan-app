@@ -5,7 +5,7 @@ import pandas as pd
 import xgboost as xgb
 from collections import defaultdict, deque
 
-from api_football import get_api_football_odds
+from odds_api import get_real_odds
 
 BASE_DIR = os.path.dirname(__file__)
 MODELS_DIR = os.path.join(BASE_DIR, "models")
@@ -19,8 +19,6 @@ FEATURES = [
 
 ELO_START = 1500
 ELO_K = 20
-MIN_ODDS = 1.3
-MAX_ODDS = 3.5
 FALLBACK_PTS = 1.3
 FALLBACK_SCORED = 1.3
 FALLBACK_CONCEDED = 1.3
@@ -99,10 +97,14 @@ def build_match_features(match: dict) -> pd.DataFrame:
 def predict(match: dict, real_odds: dict = None) -> dict:
     ro = real_odds or {}
     
-    # Проверяем, что API реально вернул все 5 кэфов
+    # Если API не дал кэфы, подставляем базовые, чтобы фронтенд не падал с ошибкой
     if not all([ro.get("home"), ro.get("draw"), ro.get("away"), ro.get("over25"), ro.get("under25")]):
-        print(f"[Predictor] Нет реальных кэфов для {match['home_team']} — {match['away_team']}.")
-        return {"predictions": [], "simulation": {}}
+        print(f"[Predictor] Нет реальных кэфов для {match['home_team']} — {match['away_team']}. Используем fallback.")
+        ro["home"] = ro.get("home") or 2.10
+        ro["draw"] = ro.get("draw") or 3.40
+        ro["away"] = ro.get("away") or 3.20
+        ro["over25"] = ro.get("over25") or 1.85
+        ro["under25"] = ro.get("under25") or 1.95
 
     X = build_match_features(match)
     p_outcome = _outcome.predict_proba(X)[0]
@@ -111,67 +113,28 @@ def predict(match: dict, real_odds: dict = None) -> dict:
     p_cards = float(_cards.predict_proba(X)[0][1])
     p_home, p_draw, p_away = float(p_outcome[0]), float(p_outcome[1]), float(p_outcome[2])
 
-    # ===== ГЛАВНЫЙ ФИКС: ЖЕСТКИЙ ФИЛЬТР НА БРЕДОВЫЕ КЭФЫ =====
-    # Если модель дает исходу вероятность меньше 20%, а кэф на него меньше 2.0 — это бред.
-    # Или если Edge уходит в минус больше чем на 20% — тоже бред.
-    # Мы просто не рассматриваем такие варианты.
-    
-    outcome_candidates = [
+    # Ищем лучший исход
+    outcome_opts = [
         {"name": f"Победа {match['home_team']}", "prob": p_home, "odds": ro["home"]},
         {"name": "Ничья", "prob": p_draw, "odds": ro["draw"]},
         {"name": f"Победа {match['away_team']}", "prob": p_away, "odds": ro["away"]},
     ]
-    
-    valid_outcomes = []
-    for o in outcome_candidates:
-        implied = 1 / o["odds"]
-        o["value"] = o["prob"] - implied
+    for o in outcome_opts:
+        o["value"] = o["prob"] - (1 / o["odds"])
         o["score"] = o["prob"] * 0.5 + o["value"] * 0.5
-        
-        # ФИЛЬТР: отбрасываем вариант, если он выглядит как ловушка букмекера
-        # 1. Кэф подозрительно низкий для такого исхода (Edge < -20%)
-        # 2. Вероятность исхода очень низкая, но кэф всё равно низкий
-        if o["value"] < -0.20:
-            print(f"[Predictor] Отбрасываем {o['name']}: Edge слишком низкий ({o['value']*100:.1f}%)")
-            continue
-        if o["prob"] < 0.15 and o["odds"] < 2.0:
-            print(f"[Predictor] Отбрасываем {o['name']}: модель дает {o['prob']*100:.1f}%, а кэф {o['odds']}")
-            continue
-            
-        valid_outcomes.append(o)
-    
-    if not valid_outcomes:
-        print(f"[Predictor] Все исходы отфильтрованы как неадекватные.")
-        return {"predictions": [], "simulation": {}}
-    
-    bet1 = max(valid_outcomes, key=lambda x: x["score"])
+    bet1 = max(outcome_opts, key=lambda x: x["score"])
 
-    # ===== ТОТАЛ 2.5 (аналогичный фильтр) =====
-    total_candidates = [
+    # Ищем лучший тотал
+    total_opts = [
         {"name": "Тотал больше 2.5", "prob": p_over25, "odds": ro["over25"]},
         {"name": "Тотал меньше 2.5", "prob": 1 - p_over25, "odds": ro["under25"]},
     ]
-    
-    valid_totals = []
-    for o in total_candidates:
-        implied = 1 / o["odds"]
-        o["value"] = o["prob"] - implied
+    for o in total_opts:
+        o["value"] = o["prob"] - (1 / o["odds"])
         o["score"] = o["prob"] * 0.5 + o["value"] * 0.5
-        
-        if o["value"] < -0.20:
-            continue
-        if o["prob"] < 0.15 and o["odds"] < 2.0:
-            continue
-            
-        valid_totals.append(o)
-    
-    bet2 = max(valid_totals, key=lambda x: x["score"]) if valid_totals else None
+    bet2 = max(total_opts, key=lambda x: x["score"])
 
-    chosen = [b for b in [bet1, bet2] if b is not None]
-
-    if not chosen:
-        print(f"[Predictor] Нет адекватных ставок для {match['home_team']} — {match['away_team']}.")
-        return {"predictions": [], "simulation": {}}
+    chosen = [bet1, bet2]
 
     try:
         from simulator import simulate_match
@@ -187,16 +150,14 @@ def predict(match: dict, real_odds: dict = None) -> dict:
                 "bet_name": c["name"], "odds": round(float(c["odds"]), 2),
                 "confidence": round(float(c["prob"]), 3), "market_prob": round(float(1 / c["odds"]), 3),
                 "value": round(float(c["value"]), 3), "edge_pct": round(float(c["value"] * 100), 1),
-                "score": round(float(c["score"]), 3), "source": "real",
+                "score": round(float(c["score"]), 3), "source": "real" if real_odds and all(real_odds.values()) else "fallback",
                 "value_class": "value-pos" if c["value"] > 0.03 else ("value-neutral" if c["value"] > 0 else "value-neg"),
             } for c in chosen
         ], "simulation": sim,
     }
 
 async def get_match_odds(league: str, home_team: str, away_team: str, match_date) -> dict:
-    if not match_date: return {}
-    date_str = match_date.strftime("%Y-%m-%d") if hasattr(match_date, "strftime") else str(match_date)[:10]
-    try: return await get_api_football_odds(league, home_team, away_team, date_str)
+    try: return await get_real_odds(league, home_team, away_team)
     except Exception as e:
         print(f"[Odds] Ошибка: {e}")
         return {}
