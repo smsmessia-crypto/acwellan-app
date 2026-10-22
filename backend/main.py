@@ -155,14 +155,16 @@ async def create_prediction(
 
     real_odds = {}
     try:
-        real_odds = await get_match_odds(match.league, match.home_team)
+        real_odds = await get_match_odds(
+            match.league, match.home_team, match.away_team, match.match_date
+        )
     except Exception as e:
-        print(f"[Predict] Ошибка The Odds: {e}")
+        print(f"[Predict] Ошибка кэфов: {e}")
 
     match_dict = {"home_team": match.home_team, "away_team": match.away_team}
 
     try:
-        result = predict(match_dict, real_odds) # <-- Убран api_fb_odds
+        result = predict(match_dict, real_odds)
     except Exception as e:
         print(f"[Predictor] Ошибка: {e}")
         raise HTTPException(500, f"Ошибка модели: {e}")
@@ -231,14 +233,16 @@ async def refresh_prediction(
 
     real_odds = {}
     try:
-        real_odds = await get_match_odds(match.league, match.home_team)
+        real_odds = await get_match_odds(
+            match.league, match.home_team, match.away_team, match.match_date
+        )
     except Exception as e:
-        print(f"[Refresh] Ошибка The Odds: {e}")
+        print(f"[Refresh] Ошибка кэфов: {e}")
 
     match_dict = {"home_team": match.home_team, "away_team": match.away_team}
 
     try:
-        result = predict(match_dict, real_odds) # <-- Убран api_fb_odds
+        result = predict(match_dict, real_odds)
     except Exception as e:
         raise HTTPException(500, f"Ошибка модели: {e}")
 
@@ -326,12 +330,14 @@ async def predict_batch(
             continue
 
         try:
-            real_odds = await get_match_odds(match.league, match.home_team)
+            real_odds = await get_match_odds(
+                match.league, match.home_team, match.away_team, match.match_date
+            )
 
             pred_result = predict(
                 {"home_team": match.home_team, "away_team": match.away_team},
                 real_odds
-            ) # <-- Убран api_fb_odds
+            )
 
             if not pred_result["predictions"]:
                 skipped += 1
