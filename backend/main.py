@@ -19,7 +19,6 @@ from schemas import MatchOut, PredictionOut, HistoryItem
 from scheduler import start_scheduler, stop_scheduler, sync_matches
 from predictor import predict, load_history_from_dataset, _team_history
 from odds import get_match_odds
-from api_football import get_api_football_odds
 from auth import (
     create_access_token, get_current_user,
     GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_REDIRECT_URI
@@ -56,9 +55,9 @@ app = FastAPI(title="Acwellan API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://acwellan-app.vercel.app",  # Твой фронтенд на Vercel
-        "http://localhost:5500",            # Для локальной разработки (Live Server)
-        "http://127.0.0.1:5500",            # Для локальной разработки (file://)
+        "https://acwellan-app.vercel.app",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -160,19 +159,10 @@ async def create_prediction(
     except Exception as e:
         print(f"[Predict] Ошибка The Odds: {e}")
 
-    api_fb_odds = {}
-    try:
-        date_str = match.match_date.strftime("%Y-%m-%d") if match.match_date else ""
-        api_fb_odds = await get_api_football_odds(
-            match.league, match.home_team, match.away_team, date_str
-        )
-    except Exception as e:
-        print(f"[Predict] Ошибка API-Football: {e}")
-
     match_dict = {"home_team": match.home_team, "away_team": match.away_team}
 
     try:
-        result = predict(match_dict, real_odds, api_fb_odds)
+        result = predict(match_dict, real_odds) # <-- Убран api_fb_odds
     except Exception as e:
         print(f"[Predictor] Ошибка: {e}")
         raise HTTPException(500, f"Ошибка модели: {e}")
@@ -211,7 +201,7 @@ async def create_prediction(
                 "market_prob": p_conf["market_prob"],
                 "edge_pct": p_conf["edge_pct"],
                 "score": p_conf["score"],
-                "source": p_conf.get("source", "model"),
+                "source": p_conf.get("source", "real"),
                 "value_class": p_conf["value_class"],
             }
             for p, p_conf in zip(created, predictions)
@@ -245,19 +235,10 @@ async def refresh_prediction(
     except Exception as e:
         print(f"[Refresh] Ошибка The Odds: {e}")
 
-    api_fb_odds = {}
-    try:
-        date_str = match.match_date.strftime("%Y-%m-%d") if match.match_date else ""
-        api_fb_odds = await get_api_football_odds(
-            match.league, match.home_team, match.away_team, date_str
-        )
-    except Exception as e:
-        print(f"[Refresh] Ошибка API-Football: {e}")
-
     match_dict = {"home_team": match.home_team, "away_team": match.away_team}
 
     try:
-        result = predict(match_dict, real_odds, api_fb_odds)
+        result = predict(match_dict, real_odds) # <-- Убран api_fb_odds
     except Exception as e:
         raise HTTPException(500, f"Ошибка модели: {e}")
 
@@ -295,7 +276,7 @@ async def refresh_prediction(
                 "market_prob": p_conf["market_prob"],
                 "edge_pct": p_conf["edge_pct"],
                 "score": p_conf["score"],
-                "source": p_conf.get("source", "model"),
+                "source": p_conf.get("source", "real"),
                 "value_class": p_conf["value_class"],
             }
             for p, p_conf in zip(created, predictions)
@@ -347,20 +328,10 @@ async def predict_batch(
         try:
             real_odds = await get_match_odds(match.league, match.home_team)
 
-            api_fb_odds = {}
-            try:
-                date_str = match.match_date.strftime("%Y-%m-%d") if match.match_date else ""
-                api_fb_odds = await get_api_football_odds(
-                    match.league, match.home_team, match.away_team, date_str
-                )
-            except Exception as e:
-                print(f"[Batch] API-Football ошибка: {e}")
-
             pred_result = predict(
                 {"home_team": match.home_team, "away_team": match.away_team},
-                real_odds,
-                api_fb_odds
-            )
+                real_odds
+            ) # <-- Убран api_fb_odds
 
             if not pred_result["predictions"]:
                 skipped += 1
