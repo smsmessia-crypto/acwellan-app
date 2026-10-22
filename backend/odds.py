@@ -1,9 +1,11 @@
-# backend/predictor.py
+# backend/odds.py
 import os
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 from collections import defaultdict, deque
+
+from api_football import get_api_football_odds
 
 BASE_DIR = os.path.dirname(__file__)
 MODELS_DIR = os.path.join(BASE_DIR, "models")
@@ -164,7 +166,6 @@ def predict(match: dict, real_odds: dict = None) -> dict:
     ]
     outcome_options = [o for o in outcome_options if MIN_ODDS <= o["odds"] <= MAX_ODDS]
 
-    # Мягкий фильтр: Edge > -5% (допускаем расхождение до 5%)
     outcome_options = [
         o for o in outcome_options
         if (o["prob"] - (1 / o["odds"])) > -0.05
@@ -234,3 +235,26 @@ def predict(match: dict, real_odds: dict = None) -> dict:
         ],
         "simulation": sim,
     }
+
+
+# ===== ДОБАВЛЕНО: единая точка получения кэфов =====
+async def get_match_odds(league: str, home_team: str, away_team: str, match_date) -> dict:
+    """
+    Обёртка над api_football.get_api_football_odds.
+    match_date может быть datetime или str — приводим к 'YYYY-MM-DD'.
+    Возвращает dict: home/draw/away/over25/under25/... (пустой, если не нашли).
+    """
+    if not match_date:
+        print(f"[Odds] Нет даты для {home_team} — {away_team}, кэфы не запрашиваем")
+        return {}
+
+    if hasattr(match_date, "strftime"):
+        date_str = match_date.strftime("%Y-%m-%d")
+    else:
+        date_str = str(match_date)[:10]
+
+    try:
+        return await get_api_football_odds(league, home_team, away_team, date_str)
+    except Exception as e:
+        print(f"[Odds] Ошибка get_api_football_odds: {e}")
+        return {}
